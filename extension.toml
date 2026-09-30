@@ -1,4 +1,4 @@
-id = "template-string-converter"
+id = "template-string-converter-lsp"
 name = "Template String Converter"
 version = "0.0.2"
 schema_version = 1

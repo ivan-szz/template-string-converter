@@ -1,0 +1,85 @@
+name: Release LSP
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  BINARY: template-string-converter-lsp
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches lsp-server version
+        run: |
+          version=$(grep -m1 '^version' lsp-server/Cargo.toml | cut -d'"' -f2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match lsp-server version $version" >&2
+            exit 1
+          fi
+      - name: Create draft release
+        run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          # Oldest supported Ubuntu runner, for broad glibc compatibility.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Test
+        if: matrix.target != 'x86_64-apple-darwin'
+        working-directory: lsp-server
+        run: cargo test --locked --target ${{ matrix.target }}
+      - name: Build
+        working-directory: lsp-server
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          tar -czf "$BINARY-${{ matrix.target }}.tar.gz" \
+            -C "lsp-server/target/${{ matrix.target }}/release" "$BINARY"
+          echo "ASSET=$BINARY-${{ matrix.target }}.tar.gz" >> "$GITHUB_ENV"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = "$env:BINARY-${{ matrix.target }}.zip"
+          Compress-Archive -Path "lsp-server/target/${{ matrix.target }}/release/$env:BINARY.exe" -DestinationPath $asset
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Upload asset
+        shell: bash
+        run: gh release upload "$GITHUB_REF_NAME" "$ASSET"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+        env:
+          GH_TOKEN: ${{ github.token }}
